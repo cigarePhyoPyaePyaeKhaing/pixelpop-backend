@@ -70,7 +70,6 @@ function dlog(...args) {
   if (DEBUG_RESET) console.log(...args);
 }
 
-app.get('/__routes', (req, res) => {});
 
 /* ────────────────────────────────────────────────────────────
    Mongo / Mongoose init
@@ -188,7 +187,10 @@ function authMiddleware(req, res, next) {
 /* ────────────────────────────────────────────────────────────
    Health / Root
    ──────────────────────────────────────────────────────────── */
-app.get('/health', (_req, res) => res.json({ ok: true }));
+app.get('/health', (_req, res) => {
+  const ready = mongoose.connection.readyState === 1 && gridfsBucket !== null;
+  res.status(ready ? 200 : 503).json({ ok: ready });
+});
 app.get('/', (_req, res) => res.send('Backend server is running!'));
 
 /* ────────────────────────────────────────────────────────────
@@ -245,8 +247,6 @@ app.post('/login', async (req, res) => {
 
 app.get('/api/auth/verify', authMiddleware, (req, res) => {
   res.json({ ok: true, user: req.user });
-});
-app.post('/__db_has_user', async (req, res) => {
 });
 
 /* ────────────────────────────────────────────────────────────
@@ -747,9 +747,7 @@ app.delete('/api/gallery/:id', authMiddleware, async (req, res) => {
 /* ────────────────────────────────────────────────────────────
    Diagnostics (remove after fixing)
    ──────────────────────────────────────────────────────────── */
-app.post('/__sg_test', async (req, res) => {});
 
-app.get('/__sg_diag', (_req, res) => {});
 
 /* ────────────────────────────────────────────────────────────
    Start server

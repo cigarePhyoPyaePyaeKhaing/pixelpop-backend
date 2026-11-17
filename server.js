@@ -529,18 +529,46 @@ app.post('/api/upload', async (req, res) => {
 });
 
 // GET /i/:id → stream the image by id
+// QR uploads remain shareable. Gallery files require the owner unless explicitly public.
+app.use(['/i/:id', '/d/:id', '/v/:id'], async (req, res, next) => {
+  if (!gridfsBucket || mongoose.connection.readyState !== 1) {
+    return res.status(503).send('Storage not ready');
+  }
+  if (!/^[a-f0-9]{24}$/i.test(req.params.id)) return res.status(400).send('Bad id');
+
+  try {
+    const id = new ObjectId(req.params.id);
+    const file = await mongoose.connection.db.collection('photos.files').findOne({ _id: id });
+    if (!file) return res.status(404).send('Not found');
+    req.photoFile = file;
+
+    if (file.metadata?.source === 'pixelpop-upload') return next();
+
+    const item = await GalleryItem.findOne({ fileId: id }).select('owner visibility').lean();
+    if (!item) return res.status(404).send('Not found');
+    if (item.visibility === 'public') return next();
+
+    res.set('Cache-Control', 'private, no-store');
+    return authMiddleware(req, res, () => {
+      if (String(item.owner) !== String(req.user.id)) return res.status(404).send('Not found');
+      next();
+    });
+  } catch (error) {
+    console.error('Photo access check failed:', error.message);
+    return res.status(500).send('Unable to load photo');
+  }
+});
+
 app.get('/i/:id', async (req, res) => {
   try {
     if (!gridfsBucket) return res.status(503).send('Storage not ready');
     const id = new ObjectId(req.params.id);
 
-    const filesCol = mongoose.connection.db.collection('photos.files');
-    const doc = await filesCol.findOne({ _id: id });
-    if (!doc) return res.status(404).send('Not found');
+    const doc = req.photoFile;
 
     const type = doc.contentType || doc.metadata?.contentType || 'image/jpeg';
     res.set('Content-Type', type);
-    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    if (!res.hasHeader('Cache-Control')) res.set('Cache-Control', 'no-cache');
     res.set('Access-Control-Allow-Origin', '*');
 
     const dl = gridfsBucket.openDownloadStream(id);
@@ -556,12 +584,10 @@ app.head('/i/:id', async (req, res) => {
   try {
     if (!gridfsBucket) return res.status(503).end();
     const id = new ObjectId(req.params.id);
-    const filesCol = mongoose.connection.db.collection('photos.files');
-    const doc = await filesCol.findOne({ _id: id }, { projection: { contentType: 1, metadata: 1 } });
-    if (!doc) return res.status(404).end();
+    const doc = req.photoFile;
     const type = doc.contentType || doc.metadata?.contentType || 'image/jpeg';
     res.set('Content-Type', type);
-    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    if (!res.hasHeader('Cache-Control')) res.set('Cache-Control', 'no-cache');
     res.set('Access-Control-Allow-Origin', '*');
     return res.status(200).end();
   } catch {
@@ -575,9 +601,7 @@ app.get('/d/:id', async (req, res) => {
     if (!gridfsBucket) return res.status(503).send('Storage not ready');
     const id = new ObjectId(req.params.id);
 
-    const filesCol = mongoose.connection.db.collection('photos.files');
-    const doc = await filesCol.findOne({ _id: id });
-    if (!doc) return res.status(404).send('Not found');
+    const doc = req.photoFile;
 
     const type = doc.contentType || doc.metadata?.contentType || 'image/jpeg';
     const ext  = (type.split('/')[1] || 'jpg').toLowerCase();
@@ -599,9 +623,7 @@ app.get('/v/:id', async (req, res) => {
   try {
     const id = new ObjectId(req.params.id);
 
-    const filesCol = mongoose.connection.db.collection('photos.files');
-    const doc = await filesCol.findOne({ _id: id });
-    if (!doc) return res.status(404).send('<h1>Not found</h1>');
+    const doc = req.photoFile;
 
     const base = getBaseUrl(req);
     const rawUrl = `${base}/i/${id.toString()}`;
